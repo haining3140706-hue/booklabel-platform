@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>BookLabel - 图书数据加工平台</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="bookdata.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  .sb::-webkit-scrollbar{width:5px;height:5px}
+  .sb::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:3px}
+  .hl-person{background:#ddd6fe;padding:1px 2px;border-radius:2px;cursor:pointer}
+  .hl-location{background:#bfdbfe;padding:1px 2px;border-radius:2px;cursor:pointer}
+  .hl-org{background:#bbf7d0;padding:1px 2px;border-radius:2px;cursor:pointer}
+  .hl-time{background:#fed7aa;padding:1px 2px;border-radius:2px;cursor:pointer}
+  .hl-knowledge{background:#fbcfe8;padding:1px 2px;border-radius:2px;cursor:pointer}
+  .hl-term{background:#fef3c7;padding:1px 2px;border-radius:2px;cursor:pointer}
+  .fade-enter-active,.fade-leave-active{transition:opacity .3s}
+  .fade-enter-from,.fade-leave-to{opacity:0}
+  .modal-mask{background:rgba(0,0,0,.35);backdrop-filter:blur(2px)}
+  .ner-popup{box-shadow:0 8px 30px rgba(0,0,0,.15)}
+  .dim-card:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+  .dim-card{transition:all .2s}
+  .book-item{transition:all .15s}
+  .book-item:hover{background:#f1f5f9}
+  .book-item.active{background:#eef2ff;border-left:3px solid #6366f1}
+  .page-flip-btn{transition:all .15s}
+  .page-flip-btn:hover:not(:disabled){background:#e0e7ff}
+  .page-flip-btn:disabled{opacity:.3;cursor:not-allowed}
+</style>
+</head>
+<body class="bg-slate-50">
+<div id="app" class="h-screen flex flex-col">
+
+  <!-- 顶部导航 -->
+  <header class="bg-white border-b border-slate-200 px-5 py-2 flex items-center justify-between shadow-sm">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center text-white font-bold text-xs">BL</div>
+      <div><h1 class="text-base font-semibold text-slate-800">BookLabel</h1><p class="text-xs text-slate-500">图书数据加工平台</p></div>
+    </div>
+    <div class="flex items-center gap-4">
+      <div class="text-sm flex items-center gap-3">
+        <span class="text-slate-500">已加工片段</span><span class="font-semibold text-indigo-600">{{ stats.processed }}</span>
+        <span class="text-slate-300">|</span>
+        <span class="text-slate-500">审核通过率</span><span class="font-semibold text-emerald-600">{{ stats.passRate }}%</span>
+        <span class="text-slate-300">|</span>
+        <span class="text-slate-500">待审核</span><span class="font-semibold text-amber-600">{{ stats.pending }}</span>
+      </div>
+      <button @click="showExportModal=true" class="px-3 py-1 text-xs bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded hover:from-indigo-700 hover:to-purple-700 flex items-center gap-1">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        生成数据集
+      </button>
+      <div class="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-medium text-xs">张</div>
+    </div>
+  </header>
+
+  <!-- 流程页签 -->
+  <div class="bg-white border-b border-slate-200 px-5 flex items-center justify-between">
+    <div class="flex">
+      <button v-for="t in tabs" :key="t.key" @click="activeTab=t.key"
+        :class="['px-3 py-2.5 text-xs font-medium border-b-2 transition flex items-center gap-1',
+                 activeTab===t.key?'border-indigo-600 text-indigo-600':'border-transparent text-slate-500 hover:text-slate-800']">
+        <span>{{ t.icon }}</span>{{ t.label }}
+        <span v-if="activeBook&&pageProgress[activePage]&&pageProgress[activePage][t.key]" class="text-emerald-500 ml-0.5">✓</span>
+      </button>
+    </div>
+    <div class="flex items-center gap-1.5 text-xs">
+      <template v-for="(t,ti) in tabs" :key="t.key">
+        <div class="w-5 h-5 rounded-full flex items-center justify-center text-xs font-medium transition-all"
+          :class="activeBook&&pageProgress[activePage]&&pageProgress[activePage][t.key]?'bg-indigo-600 text-white':activeTab===t.key?'bg-indigo-100 text-indigo-600 ring-2 ring-indigo-300':'bg-slate-200 text-slate-400'">
+          {{ (activeBook&&pageProgress[activePage]&&pageProgress[activePage][t.key])?'✓':ti+1 }}
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <main class="flex-1 flex overflow-hidden">
+
+    <!-- 左：书单 / 页面导航 -->
+    <aside class="w-56 bg-white border-r border-slate-200 flex flex-col">
+
+      <!-- 书单视图 -->
+      <template v-if="!activeBook">
+        <div class="p-3 border-b border-slate-100">
+          <div class="text-xs font-semibold text-slate-700">📚 加工书单</div>
+          <div class="text-xs text-slate-400 mt-0.5">共 {{ books.length }} 本待加工</div>
+        </div>
+        <div class="flex-1 overflow-y-auto sb">
+          <div v-for="b in books" :key="b.id" @click="selectBook(b)"
+            class="book-item px-3 py-2.5 cursor-pointer border-l-3 border-transparent">
+            <div class="flex items-start gap-2">
+              <div class="w-9 h-12 rounded flex-shrink-0 flex items-center justify-center text-lg"
+                :class="b.coverBg">{{ b.coverIcon }}</div>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs font-semibold text-slate-800 truncate">{{ b.title }}</div>
+                <div class="text-xs text-slate-400 mt-0.5">{{ b.author }}</div>
+                <div class="flex items-center gap-2 mt-1">
+                  <div class="flex-1 bg-slate-100 rounded-full h-1.5"><div class="h-1.5 rounded-full transition-all" :class="b.progressBarColor" :style="{width:b.progress+'%'}"></div></div>
+                  <span class="text-xs text-slate-500 flex-shrink-0">{{ b.progress }}%</span>
+                </div>
+                <div class="flex items-center gap-1.5 mt-1">
+                  <span class="text-xs px-1.5 py-0.5 rounded" :class="b.statusClass">{{ b.statusLabel }}</span>
+                  <span class="text-xs text-slate-400">{{ b.pages }}页</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="p-2 border-t border-slate-100 text-center">
+          <button class="px-3 py-1.5 text-xs text-indigo-600 hover:bg-indigo-50 rounded w-full">+ 导入新书</button>
+        </div>
+      </template>
+
+      <!-- 书籍详情视图：翻页导航 -->
+      <template v-else>
+        <div class="p-3 border-b border-slate-100">
+          <button @click="backToList" class="text-xs text-indigo-600 hover:text-indigo-800 flex items-center gap-1 mb-2">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+            返回书单
+          </button>
+          <div class="text-xs font-semibold text-slate-700">📖 {{ currentBook.title }}</div>
+          <div class="text-xs text-slate-400">{{ currentBook.author }} · {{ bookPages.length }}页</div>
+        </div>
+
+        <!-- 当前页预览 -->
+        <div class="flex-1 overflow-y-auto sb p-3">
+          <div class="bg-slate-50 rounded-lg border border-slate-200 p-3 mb-3">
+            <div class="text-xs text-slate-500 mb-1">当前页</div>
+            <div class="text-lg font-bold text-indigo-600">第 {{ currentPageData.page }} 页</div>
+            <div class="text-xs text-slate-400 mt-0.5">{{ currentPageData.text.length }} 字</div>
+            <!-- 页面进度指示 -->
+            <div class="flex gap-1 mt-2">
+              <div v-for="t in tabs" :key="t.key" class="w-2 h-2 rounded-full"
+                :class="pageProgress[activePage]&&pageProgress[activePage][t.key]?'bg-emerald-500':'bg-slate-300'"></div>
+            </div>
+          </div>
+
+          <!-- 页面缩略预览 -->
+          <div class="bg-amber-50/50 border border-amber-200/50 rounded p-2 text-xs text-slate-500 leading-relaxed max-h-32 overflow-hidden"
+            style="-webkit-line-clamp:5;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden">
+            {{ currentPageData.text.slice(0, 120) }}...
+          </div>
+        </div>
+
+        <!-- 翻页控制 -->
+        <div class="p-3 border-t border-slate-100">
+          <div class="flex items-center justify-between gap-2">
+            <button @click="prevPage" :disabled="activePage===0" class="page-flip-btn flex-1 py-2 text-xs border border-slate-200 rounded-lg flex items-center justify-center gap-1">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+              上一页
+            </button>
+            <div class="text-xs text-slate-600 font-medium px-2">{{ activePage+1 }}<span class="text-slate-400">/{{ bookPages.length }}</span></div>
+            <button @click="nextPage" :disabled="activePage>=bookPages.length-1" class="page-flip-btn flex-1 py-2 text-xs border border-slate-200 rounded-lg flex items-center justify-center gap-1">
+              下一页
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </button>
+          </div>
+          <!-- 快速跳页 -->
+          <div class="flex items-center gap-1 mt-2">
+            <span class="text-xs text-slate-400">跳至</span>
+            <input v-model.number="jumpPage" type="number" :min="1" :max="bookPages.length" @keyup.enter="jumpToPage"
+              class="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded text-center focus:ring-1 focus:ring-indigo-500 focus:outline-none">
+            <span class="text-xs text-slate-400">页</span>
+            <button @click="jumpToPage" class="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700">前往</button>
+          </div>
+        </div>
+      </template>
+    </aside>
+
+    <!-- 中：工作区 -->
+    <section class="flex-1 flex flex-col bg-slate-50 overflow-hidden">
+
+      <!-- 未选书时的占位 -->
+      <template v-if="!activeBook">
+        <div class="flex-1 flex items-center justify-center">
+          <div class="text-center">
+            <div class="text-5xl mb-4">📚</div>
+            <h2 class="text-lg font-semibold text-slate-700 mb-1">选择一本图书开始加工</h2>
+            <p class="text-sm text-slate-400">从左侧书单中选择一本图书，进入逐页标注流程</p>
+          </div>
+        </div>
+      </template>
+
+      <!-- 选书后的工作区 -->
+      <template v-else>
+        <div class="bg-white border-b border-slate-200 px-5 py-2 flex items-center justify-between">
+          <div class="flex items-center gap-2 text-sm">
+            <span class="text-indigo-600 font-medium">{{ currentBook.title }}</span><span class="text-slate-300">/</span>
+            <span class="text-slate-600">第 {{ currentPageData.page }} 页</span>
+            <span class="text-slate-400 text-xs ml-1">（{{ currentPageData.text.length }} 字）</span>
+          </div>
+          <div class="flex gap-1">
+            <button v-for="t in tabs" :key="t.key" @click="activeTab=t.key"
+              :class="['px-2 py-1 text-xs rounded transition',activeTab===t.key?'bg-indigo-100 text-indigo-700':'bg-slate-50 text-slate-500 hover:bg-slate-100']">{{ t.label }}</button>
+          </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto sb p-5">
+
+          <!-- 图书信息 -->
+          <div v-if="activeTab==='info'" class="max-w-3xl mx-auto bg-white rounded-lg shadow-sm border border-slate-200 p-5">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="text-sm font-semibold text-slate-800">📋 图书信息</h2>
+              <button @click="aiAction('autoFill')" class="text-xs text-indigo-600 flex items-center gap-1">⚡ AI 填充</button>
+            </div>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-2.5">
+              <div><label class="text-xs text-slate-500">书名</label><input v-model="meta.title" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"></div>
+              <div><label class="text-xs text-slate-500">ISBN</label><input v-model="meta.isbn" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"></div>
+              <div><label class="text-xs text-slate-500">作者</label><input v-model="meta.author" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"></div>
+              <div><label class="text-xs text-slate-500">出版社</label><input v-model="meta.publisher" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"></div>
+              <div><label class="text-xs text-slate-500">中图分类号</label>
+                <select v-model="meta.clc" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"><option value="I247">I247 中国当代小说</option></select></div>
+              <div><label class="text-xs text-slate-500">读者年龄段</label>
+                <select v-model="meta.audience" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"><option value="adult">成人 (18+)</option><option value="all">全年龄</option></select></div>
+              <div><label class="text-xs text-slate-500">版权归属</label>
+                <select v-model="meta.copyright" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"><option value="self">自有版权</option><option value="licensed">授权内容</option><option value="thirdparty">第三方内容</option></select></div>
+              <div><label class="text-xs text-slate-500">可用范围</label>
+                <select v-model="meta.scope" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"><option value="internal">内部检索</option><option value="ai">AI 训练</option><option value="external">对外交付</option></select></div>
+              <div><label class="text-xs text-slate-500">数据等级</label>
+                <select v-model="meta.dataLevel" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"><option value="L0">L0 原始资源</option><option value="L1">L1 结构化</option><option value="L2">L2 知识化</option><option value="L3">L3 训练数据</option></select></div>
+              <div><label class="text-xs text-slate-500">来源追溯</label><input v-model="meta.source" placeholder="原书页码/加工批次" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded focus:ring-2 focus:ring-indigo-500 focus:outline-none"></div>
+              <div class="col-span-2"><label class="text-xs text-slate-500">主题标签</label>
+                <div class="mt-1 flex flex-wrap gap-1"><button v-for="tag in topicTags" :key="tag" @click="toggleTag(tag)" :class="['px-2 py-0.5 text-xs rounded-full border',meta.tags.includes(tag)?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-500 border-slate-200']">{{ tag }}</button></div></div>
+              <div class="col-span-2"><label class="text-xs text-slate-500">内容摘要</label><textarea v-model="meta.summary" rows="3" class="mt-0.5 w-full px-2 py-1.5 text-sm border border-slate-200 rounded resize-none focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea></div>
+            </div>
+          </div>
+
+          <!-- 结构校准 -->
+          <div v-if="activeTab==='structure'" class="max-w-4xl mx-auto grid grid-cols-2 gap-4">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+              <h2 class="text-xs font-semibold text-slate-800 mb-2">📖 原文预览 · 第{{ currentPageData.page }}页</h2>
+              <div class="bg-amber-50/50 border border-amber-200/50 rounded p-3 text-sm text-slate-700 leading-relaxed whitespace-pre-line max-h-[60vh] overflow-y-auto sb">{{ currentPageData.text }}</div>
+            </div>
+            <div class="space-y-4">
+              <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <div class="flex items-center justify-between mb-2"><h2 class="text-xs font-semibold text-slate-800">🤖 AI 解析</h2><button @click="aiAction('parse')" class="text-xs text-indigo-600">⚡ 重新解析</button></div>
+                <div class="space-y-2 text-sm">
+                  <div class="flex gap-2"><span class="text-xs bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded mt-0.5 flex-shrink-0">层级</span><span class="text-slate-700">{{ aiParse.level }}</span></div>
+                  <div class="flex gap-2"><span class="text-xs bg-emerald-100 text-emerald-600 px-1.5 py-0.5 rounded mt-0.5 flex-shrink-0">段落</span><span class="text-slate-700">{{ aiParse.paragraphType }}</span></div>
+                  <div class="flex gap-2"><span class="text-xs bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded mt-0.5 flex-shrink-0">标签</span>
+                    <div class="flex flex-wrap gap-1"><span v-for="t in aiParse.tags" :key="t" class="text-xs bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded-full">{{ t }}</span></div></div>
+                </div>
+              </div>
+              <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+                <h3 class="text-xs font-semibold text-slate-800 mb-2">✏️ 人工校准</h3>
+                <div class="space-y-2">
+                  <div><label class="text-xs text-slate-500">段落类型</label>
+                    <div class="mt-1 flex flex-wrap gap-1"><button v-for="c in chapterClasses" :key="c.value" @click="structure.type=c.value" :class="['px-2 py-0.5 text-xs rounded-full border',structure.type===c.value?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-500 border-slate-200']">{{ c.label }}</button></div></div>
+                  <div class="flex gap-2">
+                    <button @click="structure.confirmed=true" :class="['px-3 py-1 text-xs rounded border',structure.confirmed?'bg-emerald-600 text-white border-emerald-600':'border-slate-200 text-slate-500']">✓ 确认</button>
+                    <button @click="structure.confirmed=false" :class="['px-3 py-1 text-xs rounded border',!structure.confirmed&&structure.confirmed!==null?'bg-amber-500 text-white border-amber-500':'border-slate-200 text-slate-500']">⚠ 修正</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 知识标注 -->
+          <div v-if="activeTab==='knowledge'" class="max-w-4xl mx-auto">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4 mb-4">
+              <div class="flex items-center justify-between mb-2">
+                <h2 class="text-xs font-semibold text-slate-800">🏷️ 第{{ currentPageData.page }}页 · 文本标注</h2>
+                <div class="flex items-center gap-2">
+                  <div class="flex gap-0.5 text-xs"><span class="px-1.5 py-0.5 hl-person rounded">人物</span><span class="px-1.5 py-0.5 hl-location rounded">地点</span><span class="px-1.5 py-0.5 hl-time rounded">时间</span><span class="px-1.5 py-0.5 hl-knowledge rounded">知识</span></div>
+                  <button @click="aiAction('ner')" class="text-xs text-indigo-600">⚡ AI识别</button>
+                </div>
+              </div>
+              <p class="text-sm text-slate-700 leading-loose select-text" @mouseup="onSelectText">
+                <template v-for="(seg,i) in nerSegments" :key="i">
+                  <span v-if="seg.type" :class="'hl-'+seg.type">{{ seg.text }}</span>
+                  <span v-else>{{ seg.text }}</span>
+                </template>
+              </p>
+            </div>
+            <div class="grid grid-cols-3 gap-3">
+              <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-3">
+                <div class="flex items-center justify-between mb-1"><h3 class="text-xs font-semibold text-slate-700">📌 实体</h3><span class="text-xs text-slate-400">{{ pageEntities.length }}</span></div>
+                <div class="space-y-0.5 max-h-36 overflow-y-auto sb">
+                  <div v-for="(e,i) in pageEntities" :key="i" class="flex items-center justify-between text-xs py-0.5 px-1 hover:bg-slate-50 rounded">
+                    <span><span :class="'hl-'+e.type+' px-1'">{{ e.text }}</span><span class="text-slate-400 ml-1">{{ e.label }}</span></span>
+                    <button @click="pageEntities.splice(i,1);rebuildSegments()" class="text-red-400">×</button>
+                  </div>
+                </div>
+              </div>
+              <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-3">
+                <div class="flex items-center justify-between mb-1"><h3 class="text-xs font-semibold text-slate-700">💡 知识点</h3><span class="text-xs text-slate-400">{{ knowledgePoints.length }}</span></div>
+                <div class="space-y-0.5 max-h-36 overflow-y-auto sb">
+                  <div v-for="(kp,ki) in knowledgePoints" :key="ki" class="flex items-center justify-between text-xs py-0.5 px-1">
+                    <span><span class="hl-knowledge px-1">{{ kp.name }}</span><span class="text-slate-400 ml-1">{{ kp.category }}</span></span>
+                    <button @click="knowledgePoints.splice(ki,1)" class="text-red-400">×</button>
+                  </div>
+                  <div class="flex gap-1 mt-1"><input v-model="newKP.name" placeholder="知识点" class="flex-1 px-1.5 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"><input v-model="newKP.category" placeholder="类别" class="w-14 px-1.5 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"><button @click="addKP" class="px-1.5 py-1 text-xs bg-indigo-600 text-white rounded">+</button></div>
+                </div>
+              </div>
+              <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-3">
+                <div class="flex items-center justify-between mb-1"><h3 class="text-xs font-semibold text-slate-700">🔗 关系</h3><span class="text-xs text-slate-400">{{ relations.length }}</span></div>
+                <div class="space-y-0.5 max-h-36 overflow-y-auto sb">
+                  <div v-for="(r,ri) in relations" :key="ri" class="text-xs py-0.5 px-1 flex justify-between">
+                    <span><span class="text-indigo-600 font-medium">{{ r.from }}</span><span class="text-slate-400 mx-0.5">—{{ r.rel }}→</span><span class="text-purple-600 font-medium">{{ r.to }}</span></span>
+                    <button @click="relations.splice(ri,1)" class="text-red-400">×</button>
+                  </div>
+                  <div class="flex gap-1 mt-1"><input v-model="newRel.from" placeholder="主体" class="w-12 px-1 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"><input v-model="newRel.rel" placeholder="关系" class="w-12 px-1 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"><input v-model="newRel.to" placeholder="客体" class="w-12 px-1 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"><button @click="addRel" class="px-1.5 py-1 text-xs bg-indigo-600 text-white rounded">+</button></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 质量审核 -->
+          <div v-if="activeTab==='audit'" class="max-w-3xl mx-auto">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4 mb-4">
+              <div class="flex items-center justify-between mb-2"><h2 class="text-xs font-semibold text-slate-800">🔍 第{{ currentPageData.page }}页 · 质量审核</h2><button @click="aiAction('audit')" class="text-xs text-indigo-600">⚡ AI审核</button></div>
+              <div class="space-y-1.5">
+                <label v-for="r in auditRules" :key="r.key" class="flex items-center gap-2 p-2 border border-slate-200 rounded hover:bg-slate-50">
+                  <input type="checkbox" v-model="audit[r.key]" class="w-3.5 h-3.5 text-indigo-600 rounded">
+                  <div class="flex-1"><div class="text-xs font-medium text-slate-800">{{ r.label }}</div><div class="text-xs text-slate-500">{{ r.desc }}</div></div>
+                  <span v-if="audit[r.key]" class="text-xs px-1 py-0.5 bg-red-100 text-red-700 rounded">已标记</span>
+                </label>
+              </div>
+              <textarea v-model="auditNote" rows="2" placeholder="审核备注…" class="mt-2 w-full px-2 py-1.5 text-xs border border-slate-200 rounded resize-none focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
+            </div>
+            <div v-if="aiAuditResult" class="bg-white rounded-lg shadow-sm border border-indigo-200 p-3 mb-4 text-xs text-slate-700"><span class="text-indigo-600 font-medium">AI建议：</span>{{ aiAuditResult }}</div>
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+              <h3 class="text-xs font-semibold text-slate-800 mb-2">审核结论</h3>
+              <div class="flex gap-2">
+                <button @click="auditConclusion='pass'" :class="['flex-1 py-2 rounded-lg border-2 text-xs font-medium',auditConclusion==='pass'?'border-emerald-500 bg-emerald-50 text-emerald-700':'border-slate-200 text-slate-500']">✓ 通过</button>
+                <button @click="auditConclusion='warning'" :class="['flex-1 py-2 rounded-lg border-2 text-xs font-medium',auditConclusion==='warning'?'border-amber-500 bg-amber-50 text-amber-700':'border-slate-200 text-slate-500']">⚠ 待确认</button>
+                <button @click="auditConclusion='reject'" :class="['flex-1 py-2 rounded-lg border-2 text-xs font-medium',auditConclusion==='reject'?'border-red-500 bg-red-50 text-red-700':'border-slate-200 text-slate-500']">✗ 不通过</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 数据集导出 -->
+          <div v-if="activeTab==='export'" class="max-w-3xl mx-auto">
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4 mb-4">
+              <div class="flex items-center justify-between mb-2"><h2 class="text-xs font-semibold text-slate-800">📐 标注模板</h2><button @click="showAddDimForm=!showAddDimForm" class="text-xs px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700">+ 新增维度</button></div>
+              <div v-if="customDimensions.length" class="space-y-1.5">
+                <div v-for="dim in customDimensions" :key="dim.id" class="dim-card border border-slate-200 rounded p-2 flex items-center justify-between group hover:border-indigo-200">
+                  <div class="flex items-center gap-1.5"><span>{{ dim.icon }}</span><span class="text-xs font-medium text-slate-800">{{ dim.name }}</span><span class="text-xs px-1 py-0.5 rounded bg-slate-100 text-slate-500">{{ dim.typeLabel }}</span>
+                    <div v-if="dim.options" class="flex gap-0.5 ml-1"><span v-for="o in dim.options" :key="o" class="text-xs px-1 py-0.5 bg-slate-50 rounded text-slate-500">{{ o }}</span></div>
+                  </div>
+                  <div class="flex gap-1 opacity-0 group-hover:opacity-100"><button @click="editDimension(dim)" class="text-xs text-indigo-600">编辑</button><button @click="deleteDimension(dim.id)" class="text-xs text-red-500">删除</button></div>
+                </div>
+              </div>
+              <div v-if="showAddDimForm" class="mt-3 pt-3 border-t bg-slate-50/50 rounded p-3">
+                <div class="grid grid-cols-3 gap-2">
+                  <div><label class="text-xs text-slate-500">维度名称</label><input v-model="dimForm.name" class="mt-0.5 w-full px-2 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"></div>
+                  <div><label class="text-xs text-slate-500">类型</label><select v-model="dimForm.type" class="mt-0.5 w-full px-2 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"><option value="single">单选</option><option value="multi">多选</option><option value="text">文本</option><option value="rating">评分</option></select></div>
+                  <div><label class="text-xs text-slate-500">选项(逗号分隔)</label><input v-model="dimForm.optionsText" placeholder="选项1,选项2" class="mt-0.5 w-full px-2 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none"></div>
+                </div>
+                <div class="mt-2 flex gap-2"><button @click="saveDimension" class="px-3 py-1 text-xs bg-indigo-600 text-white rounded">{{ editingDim?'更新':'添加' }}</button><button @click="showAddDimForm=false;editingDim=null;dimForm={name:'',type:'single',optionsText:''}" class="px-3 py-1 text-xs border border-slate-200 rounded">取消</button></div>
+              </div>
+            </div>
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+              <div class="flex items-center justify-between mb-3"><h2 class="text-xs font-semibold text-slate-800">📦 数据集预览</h2><button @click="showExportModal=true" class="px-3 py-1 text-xs bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded">生成数据集</button></div>
+              <div class="grid grid-cols-4 gap-2 mb-3">
+                <div class="bg-indigo-50 rounded p-2 text-center"><div class="text-lg font-bold text-indigo-600">{{ exportStats.fragments }}</div><div class="text-xs text-slate-500">知识片段</div></div>
+                <div class="bg-purple-50 rounded p-2 text-center"><div class="text-lg font-bold text-purple-600">{{ exportStats.entities }}</div><div class="text-xs text-slate-500">实体</div></div>
+                <div class="bg-emerald-50 rounded p-2 text-center"><div class="text-lg font-bold text-emerald-600">{{ exportStats.relations }}</div><div class="text-xs text-slate-500">关系组</div></div>
+                <div class="bg-amber-50 rounded p-2 text-center"><div class="text-lg font-bold text-amber-600">{{ exportStats.qa }}</div><div class="text-xs text-slate-500">问答样本</div></div>
+              </div>
+              <div class="text-xs text-slate-500 flex items-center gap-1">✅ 质量评分 <span class="font-semibold text-emerald-600">{{ exportStats.qualityScore }}</span> · 来源追溯完整率 <span class="font-semibold text-emerald-600">100%</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white border-t border-slate-200 px-5 py-2 flex justify-between items-center">
+          <div class="text-xs text-slate-400"><kbd class="px-1 py-0.5 bg-slate-100 rounded text-xs">←</kbd> 上一页 <kbd class="px-1 py-0.5 bg-slate-100 rounded text-xs ml-1">→</kbd> 下一页 <kbd class="px-1 py-0.5 bg-slate-100 rounded text-xs ml-1">Ctrl+S</kbd> 保存</div>
+          <div class="flex gap-2">
+            <button @click="save" class="px-3 py-1.5 text-xs border border-indigo-200 text-indigo-600 rounded hover:bg-indigo-50">保存草稿</button>
+            <button @click="submit" class="px-4 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700">提交本页</button>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- 右：加工进度 -->
+    <aside class="w-64 bg-white border-l border-slate-200 flex flex-col">
+      <template v-if="!activeBook">
+        <div class="flex-1 flex items-center justify-center">
+          <div class="text-center text-slate-400">
+            <div class="text-3xl mb-2">📊</div>
+            <div class="text-xs">选择图书后显示进度</div>
+          </div>
+        </div>
+      </template>
+      <template v-else>
+        <div class="p-3 border-b border-slate-100">
+          <h3 class="text-xs font-semibold text-slate-700 mb-2">📊 本书加工进度</h3>
+          <div class="space-y-1.5">
+            <div v-for="t in tabs" :key="t.key" class="flex items-center gap-2">
+              <div class="w-5 h-5 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0"
+                :class="pageProgress[activePage]&&pageProgress[activePage][t.key]?'bg-indigo-600 text-white':activeTab===t.key?'bg-indigo-100 text-indigo-600 ring-1 ring-indigo-300':'bg-slate-200 text-slate-400'">
+                {{ (pageProgress[activePage]&&pageProgress[activePage][t.key])?'✓':'' }}</div>
+              <span class="text-xs text-slate-700 flex-1">{{ t.label }}</span>
+              <span class="text-xs" :class="pageProgress[activePage]&&pageProgress[activePage][t.key]?'text-emerald-600':'text-slate-400'">{{ (pageProgress[activePage]&&pageProgress[activePage][t.key])?'已完成':'待处理' }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="p-3 border-b border-slate-100">
+          <h3 class="text-xs font-semibold text-slate-700 mb-1">页面进度</h3>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 bg-slate-100 rounded-full h-2"><div class="bg-indigo-500 h-2 rounded-full transition-all" :style="{width:pageProgressPercent+'%'}"></div></div>
+            <span class="text-xs text-slate-600 font-medium">{{ pageProgressPercent }}%</span>
+          </div>
+          <div class="text-xs text-slate-400 mt-1">已完成 {{ completedPages }} / {{ bookPages.length }} 页</div>
+        </div>
+        <div class="p-3 border-b border-slate-100">
+          <h3 class="text-xs font-semibold text-slate-700 mb-1">标注规范</h3>
+          <ul class="text-xs text-slate-500 space-y-0.5"><li>● 实体边界不含修饰词与标点</li><li>● 知识点需标注类别与关系</li><li>● 审核有疑问优先勾选备注</li></ul>
+          <button @click="showGuidelineModal=true" class="mt-1 text-xs text-indigo-600 hover:underline">查看完整规范 →</button>
+        </div>
+        <div class="flex-1 p-3 overflow-y-auto sb">
+          <h3 class="text-xs font-semibold text-slate-700 mb-1">最近操作</h3>
+          <div class="space-y-1">
+            <div v-for="(h,i) in history" :key="i" class="text-xs p-1.5 bg-slate-50 rounded"><div class="text-slate-700">{{ h.action }}</div><div class="text-slate-400 mt-0.5">{{ h.time }}</div></div>
+          </div>
+        </div>
+      </template>
+    </aside>
+  </main>
+
+  <!-- NER 弹出面板 -->
+  <transition name="fade">
+    <div v-if="nerPopup.show" class="fixed inset-0 z-50" @click.self="nerPopup.show=false">
+      <div class="ner-popup bg-white rounded-lg shadow-xl border border-slate-200 p-3 w-56 absolute" :style="{left:nerPopup.x+'px',top:nerPopup.y+'px'}" @click.stop>
+        <p class="text-xs text-slate-700 mb-2">为「<span class="font-semibold text-indigo-600">{{ nerPopup.text }}</span>」选择类型</p>
+        <div class="grid grid-cols-3 gap-1">
+          <button v-for="et in entityTypes" :key="et.type" @click="confirmEntity(et.type,et.label)" class="flex items-center gap-1 px-1.5 py-1 text-xs border border-slate-200 rounded hover:bg-indigo-50"><span class="w-2 h-2 rounded-sm" :class="et.dot"></span>{{ et.label }}</button>
+        </div>
+        <div class="mt-1.5 pt-1.5 border-t flex gap-1"><input v-model="nerPopup.customType" placeholder="自定义…" class="flex-1 px-1.5 py-1 text-xs border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none" @keyup.enter="confirmCustomEntity"><button @click="confirmCustomEntity" class="px-1.5 py-1 text-xs bg-indigo-600 text-white rounded">+</button></div>
+        <button @click="nerPopup.show=false" class="mt-1 text-xs text-slate-400 w-full text-center">取消</button>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 导出弹窗 -->
+  <transition name="fade">
+    <div v-if="showExportModal" class="fixed inset-0 z-50 flex items-center justify-center modal-mask" @click.self="showExportModal=false">
+      <div class="bg-white rounded-xl shadow-2xl w-[560px]">
+        <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between"><h2 class="text-sm font-semibold">📦 生成数据集</h2><button @click="showExportModal=false" class="text-slate-400 text-lg">×</button></div>
+        <div class="p-5">
+          <div class="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-3 mb-4 text-xs text-slate-700">
+            本次共生成 <span class="font-semibold text-indigo-600">{{ exportStats.fragments }}</span> 条知识片段、<span class="font-semibold text-purple-600">{{ exportStats.entities }}</span> 个实体、<span class="font-semibold text-emerald-600">{{ exportStats.relations }}</span> 组关系、<span class="font-semibold text-amber-600">{{ exportStats.qa }}</span> 条问答样本，质量评分 <span class="font-semibold text-emerald-600">{{ exportStats.qualityScore }}</span> 分。
+          </div>
+          <div class="space-y-1.5">
+            <label v-for="opt in exportOptions" :key="opt.key" class="flex items-center gap-2 p-2 border border-slate-200 rounded hover:bg-slate-50 cursor-pointer">
+              <input type="checkbox" v-model="opt.checked" class="w-3.5 h-3.5 text-indigo-600 rounded">
+              <div class="flex-1"><div class="text-xs font-medium text-slate-800">{{ opt.label }}</div><div class="text-xs text-slate-500">{{ opt.desc }}</div></div>
+              <span class="text-xs px-1.5 py-0.5 bg-slate-100 rounded text-slate-600">{{ opt.format }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="px-5 py-2.5 border-t border-slate-200 flex justify-end gap-2"><button @click="showExportModal=false" class="px-3 py-1.5 text-xs border border-slate-200 rounded">取消</button><button @click="doExport" class="px-4 py-1.5 text-xs bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded">确认导出</button></div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 规范文档 -->
+  <transition name="fade">
+    <div v-if="showGuidelineModal" class="fixed inset-0 z-50 flex items-center justify-center modal-mask" @click.self="showGuidelineModal=false">
+      <div class="bg-white rounded-xl shadow-2xl w-[520px] max-h-[65vh] flex flex-col">
+        <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between"><h2 class="text-sm font-semibold">标注规范</h2><button @click="showGuidelineModal=false" class="text-slate-400 text-lg">×</button></div>
+        <div class="flex-1 overflow-y-auto sb p-5 text-xs text-slate-700 leading-relaxed space-y-3">
+          <section><h3 class="font-semibold text-slate-800">图书信息</h3><ul class="list-disc list-inside text-slate-600 mt-1 space-y-0.5"><li>书名、作者、出版社须与 ISBN 数据库一致</li><li>数据等级按 L0~L3 四级划分</li></ul></section>
+          <section><h3 class="font-semibold text-slate-800">结构校准</h3><ul class="list-disc list-inside text-slate-600 mt-1 space-y-0.5"><li>段落类型以占比超 60% 为准</li><li>校准确认后方可进入下一步</li></ul></section>
+          <section><h3 class="font-semibold text-slate-800">知识标注</h3><ul class="list-disc list-inside text-slate-600 mt-1 space-y-0.5"><li>实体：仅标注具名人物/地名/机构/时间</li><li>知识点：标注文学手法、主题等</li><li>关系：标注实体间与知识点间语义关系</li></ul></section>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="fade"><div v-if="toast" class="fixed top-14 right-4 px-3 py-1.5 rounded shadow text-xs" :class="toastType==='success'?'bg-emerald-500 text-white':toastType==='warning'?'bg-amber-500 text-white':'bg-indigo-500 text-white'">{{ toast }}</div></transition>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted } = Vue
+createApp({
+  setup() {
+    const bookPages = ref(BOOK_PAGES)
+    const tabs = ref([{key:'info',label:'图书信息',icon:'📋'},{key:'structure',label:'结构校准',icon:'📖'},{key:'knowledge',label:'知识标注',icon:'🏷️'},{key:'audit',label:'质量审核',icon:'🔍'},{key:'export',label:'数据集导出',icon:'📦'}])
+    const topicTags = ['乡土文学','历史','亲情','苦难','爱情','战争','社会','成长']
+    const chapterClasses = [{value:'narrative',label:'叙事'},{value:'dialogue',label:'对话'},{value:'monologue',label:'独白'},{value:'scene',label:'环境'}]
+    const auditRules = [{key:'violence',label:'暴力血腥',desc:'过度暴力描写'},{key:'sensitive',label:'敏感话题',desc:'政治宗教敏感内容'},{key:'copyright',label:'版权风险',desc:'疑似抄袭'},{key:'minor',label:'未成年保护',desc:'不适合未成年人'},{key:'discrimination',label:'歧视内容',desc:'种族性别歧视'}]
+    const entityTypes = [{type:'person',label:'人物',dot:'bg-purple-300'},{type:'location',label:'地点',dot:'bg-blue-300'},{type:'time',label:'时间',dot:'bg-orange-300'},{type:'knowledge',label:'知识',dot:'bg-pink-300'},{type:'term',label:'术语',dot:'bg-yellow-300'},{type:'org',label:'机构',dot:'bg-green-300'}]
+
+    // 书单数据
+    const books = ref([
+      {id:'huozhe',title:'活着',author:'余华',pages:62,progress:32,coverBg:'bg-indigo-100',coverIcon:'📖',statusLabel:'加工中',statusClass:'bg-indigo-100 text-indigo-700',progressBarColor:'bg-indigo-500',dataKey:'BOOK_PAGES'},
+      {id:'xusan',title:'许三观卖血记',author:'余华',pages:0,progress:0,coverBg:'bg-emerald-100',coverIcon:'📗',statusLabel:'待导入',statusClass:'bg-slate-100 text-slate-600',progressBarColor:'bg-emerald-500',dataKey:null},
+      {id:'bancheng',title:'半城柳色半城笛',author:'林清玄',pages:0,progress:0,coverBg:'bg-amber-100',coverIcon:'📙',statusLabel:'待导入',statusClass:'bg-slate-100 text-slate-600',progressBarColor:'bg-amber-500',dataKey:null},
+      {id:'biancheng',title:'边城',author:'沈从文',pages:0,progress:0,coverBg:'bg-cyan-100',coverIcon:'📘',statusLabel:'待导入',statusClass:'bg-slate-100 text-slate-600',progressBarColor:'bg-cyan-500',dataKey:null},
+      {id:'honglou',title:'红楼梦（第一卷）',author:'曹雪芹',pages:0,progress:0,coverBg:'bg-rose-100',coverIcon:'📕',statusLabel:'待导入',statusClass:'bg-slate-100 text-slate-600',progressBarColor:'bg-rose-500',dataKey:null}
+    ])
+    const activeBook = ref(null)  // null=书单视图, book对象=详情视图
+    const jumpPage = ref(1)
+
+    const activeTab = ref('structure')
+    const activePage = ref(0)
+    const currentPageData = computed(() => bookPages.value[activePage.value] || {page:0,text:''})
+    const currentBook = computed(() => activeBook.value || books.value[0])
+
+    const meta = ref({title:'活着',isbn:'9787506365437',author:'余华',publisher:'作家出版社',clc:'I247',audience:'adult',copyright:'self',scope:'ai',dataLevel:'L2',source:'原书PDF/批次20260511',tags:['乡土文学','苦难'],summary:'《活着》讲述了农村人福贵悲惨的人生遭遇。'})
+    const structure = ref({level:'chapter',type:'narrative',confirmed:null})
+    const aiParse = ref({level:'第一章',paragraphType:'叙事描写 — 情节推进为主',tags:['乡土文学','苦难','家庭','时代变迁']})
+
+    const pageEntities = ref([])
+    const pageProgress = ref({})
+    const knowledgePoints = ref([{name:'乡土叙事',category:'文学手法'},{name:'苦难书写',category:'主题'},{name:'家庭伦理',category:'主题'}])
+    const relations = ref([{from:'福贵',rel:'人物关系',to:'家珍'},{from:'土地改革',rel:'影响',to:'家庭命运'}])
+    const newKP = ref({name:'',category:''})
+    const newRel = ref({from:'',rel:'',to:''})
+    const audit = ref({violence:false,sensitive:false,copyright:false,minor:false,discrimination:false})
+    const auditNote = ref(''); const auditConclusion = ref(''); const aiAuditResult = ref('')
+    const stats = ref({processed:47,passRate:96.8,pending:12})
+    const exportStats = ref({fragments:128,entities:36,relations:18,qa:12,qualityScore:92.5})
+    const exportOptions = ref([{key:'structured',label:'结构化文本',desc:'图书章节结构化数据',format:'JSON',checked:true},{key:'annotation',label:'知识标注数据',desc:'实体、知识点标注',format:'JSONL',checked:true},{key:'qa',label:'问答数据集',desc:'自动生成QA对',format:'QA JSON',checked:true},{key:'relation',label:'实体关系数据',desc:'三元组关系',format:'CSV',checked:true},{key:'report',label:'质量报告',desc:'加工质量评估',format:'PDF',checked:false}])
+    const toast = ref(''); const toastType = ref('success')
+    const history = ref([{action:'提交了第4页 结构校准',time:'2分钟前'},{action:'保存了第8页草稿',time:'15分钟前'}])
+    const showExportModal = ref(false); const showGuidelineModal = ref(false); const showAddDimForm = ref(false)
+    const customDimensions = ref([{id:'dim1',name:'文学风格',type:'single',typeLabel:'单选',icon:'🎨',required:true,options:['现实主义','浪漫主义','魔幻现实主义','现代主义']},{id:'dim2',name:'情感基调',type:'multi',typeLabel:'多选',icon:'🎭',required:false,options:['悲伤','温暖','讽刺','紧张','平静']}])
+    const editingDim = ref(null); const dimForm = ref({name:'',type:'single',optionsText:''})
+    const nerPopup = ref({show:false,text:'',x:0,y:0,customType:''})
+    const nerSegments = ref([])
+
+    function rebuildSegments(){const text=currentPageData.value.text||'';const sorted=[...pageEntities.value];let segs=[{text,type:null}];sorted.forEach(e=>{const next=[];segs.forEach(s=>{if(s.type){next.push(s);return}const idx=s.text.indexOf(e.text);if(idx===-1){next.push(s);return}if(idx>0)next.push({text:s.text.slice(0,idx),type:null});next.push({text:e.text,type:e.type,label:e.label});if(idx+e.text.length<s.text.length)next.push({text:s.text.slice(idx+e.text.length),type:null})});segs=next});nerSegments.value=segs}
+
+    function onSelectText(e){const sel=window.getSelection();const txt=sel.toString().trim();if(!txt)return;const r=e.target.getBoundingClientRect?e.target.getBoundingClientRect():{left:200,top:200};nerPopup.value={show:true,text:txt,x:Math.min(r.left+30,innerWidth-280),y:Math.min(r.top-100,innerHeight-300),customType:''};sel.removeAllRanges()}
+    function confirmEntity(type,label){pageEntities.value.push({text:nerPopup.value.text,type,label,confidence:.80});nerPopup.value.show=false;rebuildSegments();addHistory('添加实体「'+nerPopup.value.text+'」')}
+    function confirmCustomEntity(){const ct=nerPopup.value.customType.trim();if(!ct)return;pageEntities.value.push({text:nerPopup.value.text,type:'custom',label:ct,confidence:.70});nerPopup.value.show=false;rebuildSegments()}
+
+    // 书单操作
+    function selectBook(b){
+      if(!b.dataKey){showToast('该书尚未导入数据','warning');return}
+      activeBook.value=b
+      activePage.value=0
+      activeTab.value='structure'
+      pageEntities.value=[]
+      jumpPage.value=1
+      rebuildSegments()
+      addHistory('打开《'+b.title+'》')
+    }
+    function backToList(){
+      activeBook.value=null
+      addHistory('返回书单')
+    }
+
+    function goPage(i){activePage.value=i;if(activeTab.value==='knowledge'){pageEntities.value=[];rebuildSegments()}}
+    function prevPage(){if(activePage.value>0)goPage(activePage.value-1)}
+    function nextPage(){if(activePage.value<bookPages.value.length-1)goPage(activePage.value+1)}
+    function jumpToPage(){
+      const p=jumpPage.value
+      if(p>=1&&p<=bookPages.value.length){goPage(p-1);jumpPage.value=p}
+      else showToast('页码超出范围','warning')
+    }
+    function toggleTag(tag){const i=meta.value.tags.indexOf(tag);i>-1?meta.value.tags.splice(i,1):meta.value.tags.push(tag)}
+    function addKP(){if(newKP.value.name){knowledgePoints.value.push({...newKP.value});newKP.value={name:'',category:''}}}
+    function addRel(){if(newRel.value.from&&newRel.value.rel&&newRel.value.to){relations.value.push({...newRel.value});newRel.value={from:'',rel:'',to:''}}}
+
+    const completedPages = computed(()=>Object.keys(pageProgress.value).filter(k=>{const p=pageProgress.value[k];return p&&tabs.value.every(t=>p[t.key])}).length)
+    const pageProgressPercent = computed(()=>bookPages.value.length?Math.round(completedPages.value/bookPages.value.length*100):0)
+
+    function showToast(msg,type='success'){toast.value=msg;toastType.value=type;setTimeout(()=>toast.value='',2000)}
+    function addHistory(action){history.value.unshift({action,time:'刚刚'});if(history.value.length>10)history.value.pop()}
+    function save(){showToast('草稿已保存');addHistory('保存了第'+currentPageData.value.page+'页草稿')}
+    function submit(){if(!pageProgress.value[activePage.value])pageProgress.value[activePage.value]={};pageProgress.value[activePage.value][activeTab.value]=true;stats.value.processed++;addHistory('提交了第'+currentPageData.value.page+'页 '+tabs.value.find(t=>t.key===activeTab.value)?.label);showToast('已提交');const ch=pageProgress.value[activePage.value];const nextKey=tabs.value.find(t=>!ch[t.key]);if(nextKey)activeTab.value=nextKey.key;else nextPage()}
+
+    function aiAction(type){
+      if(type==='autoFill'){showToast('AI 填充完成');addHistory('AI 填充图书信息')}
+      else if(type==='parse'){showToast('AI 解析完成');addHistory('AI 解析第'+currentPageData.value.page+'页')}
+      else if(type==='ner'){const content=currentPageData.value.text||'';const added=[];const names=['福贵','家珍','凤霞','有庆','龙二','长根','春生','老全'];names.forEach(n=>{if(content.includes(n)&&!pageEntities.value.find(e=>e.text===n)){pageEntities.value.push({text:n,type:'person',label:'人物',confidence:.88});added.push(n)}});rebuildSegments();showToast('AI 识别 '+added.length+' 个实体');addHistory('AI 识别第'+currentPageData.value.page+'页 '+added.length+'个实体')}
+      else if(type==='audit'){aiAuditResult.value='经 AI 分析，本页内容未发现明显风险。';showToast('AI 审核完成');addHistory('AI 审核第'+currentPageData.value.page+'页')}
+    }
+
+    function doExport(){showExportModal.value=false;showToast('数据集已生成');addHistory('生成数据集')}
+    function saveDimension(){if(!dimForm.value.name){showToast('请输入名称','warning');return}const tl={single:'单选',multi:'多选',text:'文本',rating:'评分'};const opts=dimForm.value.optionsText?dimForm.value.optionsText.split(',').map(s=>s.trim()).filter(Boolean):[];if(editingDim.value){const d=customDimensions.value.find(x=>x.id===editingDim.value);if(d)Object.assign(d,{name:dimForm.value.name,type:dimForm.value.type,typeLabel:tl[dimForm.value.type],options:opts});editingDim.value=null}else{customDimensions.value.push({id:'dim'+Date.now(),name:dimForm.value.name,type:dimForm.value.type,typeLabel:tl[dimForm.value.type],icon:'📐',options:opts})}showToast('已添加');dimForm.value={name:'',type:'single',optionsText:''};showAddDimForm.value=false}
+    function editDimension(dim){editingDim.value=dim.id;dimForm.value={name:dim.name,type:dim.type,optionsText:(dim.options||[]).join(',')};showAddDimForm.value=true}
+    function deleteDimension(id){customDimensions.value=customDimensions.value.filter(d=>d.id!==id);showToast('已删除')}
+
+    watch(activePage,()=>{if(activeTab.value==='knowledge'){pageEntities.value=[];rebuildSegments()}})
+
+    onMounted(()=>{rebuildSegments();window.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;if(!activeBook.value)return;if(e.key==='ArrowLeft')prevPage();if(e.key==='ArrowRight')nextPage();if(e.ctrlKey&&e.key==='s'){e.preventDefault();save()}})})
+
+    return{bookPages,tabs,topicTags,chapterClasses,auditRules,entityTypes,books,activeBook,jumpPage,activeTab,activePage,currentPageData,currentBook,meta,structure,aiParse,pageEntities,pageProgress,knowledgePoints,relations,newKP,newRel,audit,auditNote,auditConclusion,aiAuditResult,stats,exportStats,exportOptions,toast,toastType,history,nerPopup,nerSegments,customDimensions,editingDim,dimForm,showExportModal,showGuidelineModal,showAddDimForm,completedPages,pageProgressPercent,selectBook,backToList,goPage,prevPage,nextPage,jumpToPage,toggleTag,addKP,addRel,onSelectText,confirmEntity,confirmCustomEntity,rebuildSegments,aiAction,saveDimension,editDimension,deleteDimension,doExport,showToast,addHistory,save,submit}
+  }
+}).mount('#app')
+</script>
+</body>
